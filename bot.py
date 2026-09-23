@@ -29,7 +29,7 @@ def health_check():
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
-    web_app.run(host="0.0.0.0", port=port)
+    web_app.run(host="0.0.0.0", port=port, threaded=True)
 
 
 # --- Safety limits (tuned for Render's free tier: shared CPU, ~512MB RAM) ---
@@ -121,6 +121,29 @@ if not BOT_TOKEN:
         "  export TELEGRAM_BOT_TOKEN='your-token-here'   (Mac/Linux)\n"
         "  set TELEGRAM_BOT_TOKEN=your-token-here        (Windows)"
     )
+
+# Optional: a private channel (your own) that the bot logs user activity to.
+# If not set, logging is simply skipped — the bot still works fine without it.
+LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID")
+if LOG_CHANNEL_ID:
+    LOG_CHANNEL_ID = int(LOG_CHANNEL_ID)
+
+
+async def log_event(context: ContextTypes.DEFAULT_TYPE, text: str):
+    """Posts an activity line to the owner's private log channel, if configured."""
+    if not LOG_CHANNEL_ID:
+        return
+    try:
+        await context.bot.send_message(chat_id=LOG_CHANNEL_ID, text=text)
+    except Exception as e:
+        logger.error(f"Failed to log to channel: {e}")
+
+
+def describe_user(user) -> str:
+    """Formats a user's name/username/ID for log messages."""
+    name = user.first_name or "Unknown"
+    username = f"@{user.username}" if user.username else "no username"
+    return f"{name} ({username}, id:{user.id})"
 
 
 def check_daily_limit(user_id: int) -> bool:
@@ -245,6 +268,7 @@ def compress_video(input_path: str, output_path: str, target_size_bytes: int, du
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     first_name = update.effective_user.first_name or "there"
+    await log_event(context, f"🆕 /start from {describe_user(update.effective_user)}")
     await update.message.reply_text(
         f"Hey {first_name}! 👋 I'm your video downloader bot.\n\n"
         "Just send me a video link — YouTube, Instagram, X, and most other platforms work — "
@@ -469,6 +493,10 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
 
                     await query.delete_message()
                     increment_daily_usage(user_id)
+                    await log_event(
+                        context,
+                        f"✅ Download by {describe_user(query.from_user)} — {quality} — {url}"
+                    )
                 except Exception as e:
                     logger.error(f"Sending file failed: {e}")
                     await query.edit_message_text(
