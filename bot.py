@@ -80,6 +80,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 # This helps avoid YouTube blocking requests from cloud/datacenter IPs.
 COOKIES_PATH = "/etc/secrets/cookies.txt"
 COOKIES_AVAILABLE = os.path.exists(COOKIES_PATH)
+print(f"[STARTUP CHECK] Cookies file found at {COOKIES_PATH}: {COOKIES_AVAILABLE}")
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
