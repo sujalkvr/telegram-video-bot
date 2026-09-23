@@ -15,6 +15,8 @@ RUN curl -fsSL https://deno.land/install.sh | sh
 ENV DENO_INSTALL=/root/.deno
 ENV PATH="${DENO_INSTALL}/bin:${PATH}"
 
+RUN deno --version
+
 WORKDIR /app
 
 # Install Python dependencies
