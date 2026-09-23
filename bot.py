@@ -140,9 +140,10 @@ def increment_daily_usage(user_id: int):
 def get_video_info(url: str):
     """Quick metadata-only lookup (no download) to check duration/validity upfront."""
     ydl_opts = {
-        "quiet": False,
-        "no_warnings": False,
-        "verbose": True,
+        "quiet": True,
+        "no_warnings": True,
+        # "verbose": True,       # uncomment these two lines for detailed debug logs
+        # "quiet": False, "no_warnings": False,
         "noplaylist": True,
         "socket_timeout": 15,
         "retries": 2,
