@@ -6,10 +6,12 @@ import logging
 import tempfile
 import subprocess
 import threading
+import shutil
 from datetime import date
 import yt_dlp
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler, CallbackQueryHandler,
     ContextTypes, filters
@@ -28,6 +30,7 @@ def health_check():
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     web_app.run(host="0.0.0.0", port=port)
+
 
 # --- Safety limits (tuned for Render's free tier: shared CPU, ~512MB RAM) ---
 MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024        # Telegram bot upload limit
@@ -59,6 +62,13 @@ YOUTUBE_BLOCKED_MESSAGE = (
 )
 
 
+def make_progress_bar(percent: float, length: int = 10) -> str:
+    """Builds a simple block-based progress bar, e.g. ▓▓▓▓░░░░░░ 40%"""
+    filled = int(length * percent / 100)
+    filled = max(0, min(length, filled))
+    return "▓" * filled + "░" * (length - filled)
+
+
 # --- Global state for safety controls ---
 active_downloads = set()        # user_ids currently downloading (prevents same user double-queueing)
 download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
@@ -83,16 +93,13 @@ async def update_queue_positions():
         except Exception:
             pass  # message may have been deleted/expired; safe to ignore
 
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
-
-# If a cookies.txt file is provided (via Render's Secret Files feature), use it.
-# This helps avoid YouTube blocking requests from cloud/datacenter IPs.
-import shutil
 
 # Render's Secret Files are mounted read-only, but yt-dlp needs to write back to the
 # cookies file after use — so we copy it to a writable location first.
@@ -133,13 +140,13 @@ def increment_daily_usage(user_id: int):
 def get_video_info(url: str):
     """Quick metadata-only lookup (no download) to check duration/validity upfront."""
     ydl_opts = {
-    "quiet": False,
-    "no_warnings": False,
-    "verbose": True,
-    "noplaylist": True,
-    "socket_timeout": 15,
-    "retries": 2,
-}
+        "quiet": False,
+        "no_warnings": False,
+        "verbose": True,
+        "noplaylist": True,
+        "socket_timeout": 15,
+        "retries": 2,
+    }
     if COOKIES_AVAILABLE:
         ydl_opts["cookiefile"] = COOKIES_PATH
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -224,11 +231,55 @@ def compress_video(input_path: str, output_path: str, target_size_bytes: int, du
     subprocess.run(cmd, check=True, capture_output=True, timeout=120)
 
 
+# --- Command handlers ---
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    first_name = update.effective_user.first_name or "there"
     await update.message.reply_text(
-        "Hi! Send me a video link (YouTube, Instagram, X, and most other platforms work).\n\n"
-        f"Note: videos longer than {MAX_DURATION_SECONDS // 60} minutes aren't supported, "
-        f"and there's a {MAX_DOWNLOADS_PER_USER_PER_DAY}/day limit per person."
+        f"Hey {first_name}! 👋 I'm your video downloader bot.\n\n"
+        "Just send me a video link — YouTube, Instagram, X, and most other platforms work — "
+        "and I'll ask what quality or format you want.\n\n"
+        "Example: paste a YouTube Shorts or Instagram Reel link right here.\n\n"
+        "Type /help for full details, or /stats to see your daily usage."
+    )
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🎬 *What I can do*\n"
+        "Send me a video link and I'll download it for you, in 720p, 480p, or as an MP3.\n\n"
+        "✅ *Reliable:* Instagram, X (Twitter), and most other sites yt-dlp supports.\n"
+        "⚠️ *YouTube — not guaranteed:* YouTube actively blocks cloud-hosted bots like this one. "
+        "It often works, but it can fail unpredictably due to YouTube's anti-bot measures — "
+        "this isn't something I can fully control.\n\n"
+        "📏 *Limits*\n"
+        f"• Videos longer than {MAX_DURATION_SECONDS // 60} minutes aren't supported\n"
+        f"• {MAX_DOWNLOADS_PER_USER_PER_DAY} downloads per day, per person\n"
+        "• Files over 50MB get auto-compressed; if still too big, try a lower quality\n\n"
+        "🧭 *Commands*\n"
+        "/start — welcome message\n"
+        "/help — this message\n"
+        "/stats — your usage today",
+        parse_mode="Markdown",
+    )
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    today = date.today()
+    record = daily_usage.get(user_id)
+
+    if record is None or record["date"] != today:
+        used = 0
+    else:
+        used = record["count"]
+
+    remaining = max(0, MAX_DOWNLOADS_PER_USER_PER_DAY - used)
+    await update.message.reply_text(
+        f"📊 *Your usage today*\n"
+        f"Downloads used: {used}/{MAX_DOWNLOADS_PER_USER_PER_DAY}\n"
+        f"Remaining: {remaining}",
+        parse_mode="Markdown",
     )
 
 
@@ -251,7 +302,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    status_message = await update.message.reply_text("Checking link...")
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    status_message = await update.message.reply_text("🔎 Checking link...")
 
     try:
         duration, title = await asyncio.to_thread(get_video_info, url)
@@ -275,12 +327,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link_id = uuid.uuid4().hex[:8]
     pending_links[link_id] = url
 
+    title_line = f"🎬 *{title}*\n\n" if title else ""
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("720p", callback_data=f"720|{link_id}"),
         InlineKeyboardButton("480p", callback_data=f"480|{link_id}"),
         InlineKeyboardButton("Audio (MP3)", callback_data=f"audio|{link_id}"),
     ]])
-    await status_message.edit_text("What would you like?", reply_markup=keyboard)
+    await status_message.edit_text(
+        f"{title_line}What would you like?",
+        reply_markup=keyboard,
+        parse_mode="Markdown",
+    )
 
 
 async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -320,7 +377,9 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
             if joined_queue and query in waiting_queue:
                 waiting_queue.remove(query)
                 await update_queue_positions()  # shift everyone else's position down
-            await query.edit_message_text("Starting download... 0%")
+
+            await context.bot.send_chat_action(chat_id=query.message.chat_id, action=ChatAction.UPLOAD_VIDEO)
+            await query.edit_message_text(f"⬇️ Starting download... {make_progress_bar(0)} 0%")
 
             loop = asyncio.get_running_loop()
             last_reported = {"percent": -10}
@@ -328,8 +387,9 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
             def on_progress(percent):
                 if percent - last_reported["percent"] >= 10:
                     last_reported["percent"] = percent
+                    bar = make_progress_bar(percent)
                     asyncio.run_coroutine_threadsafe(
-                        query.edit_message_text(f"Downloading... {percent:.0f}%"),
+                        query.edit_message_text(f"⬇️ Downloading... {bar} {percent:.0f}%"),
                         loop
                     )
 
@@ -361,7 +421,7 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
                         return
 
                     await query.edit_message_text(
-                        f"Video is {file_size / (1024*1024):.1f}MB — compressing to fit under 50MB..."
+                        f"🗜️ Video is {file_size / (1024*1024):.1f}MB — compressing to fit under 50MB..."
                     )
                     compressed_path = os.path.join(tmp_dir, "compressed.mp4")
                     try:
@@ -384,7 +444,11 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
                     )
                     return
 
-                await query.edit_message_text("Sending...")
+                await query.edit_message_text("📤 Sending...")
+                await context.bot.send_chat_action(
+                    chat_id=query.message.chat_id,
+                    action=ChatAction.UPLOAD_AUDIO if quality == "audio" else ChatAction.UPLOAD_VIDEO
+                )
 
                 with open(filepath, "rb") as f:
                     if quality == "audio":
@@ -398,6 +462,15 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
         active_downloads.discard(user_id)
 
 
+async def post_init(application):
+    """Sets the '/' commands menu shown in Telegram's UI."""
+    await application.bot.set_my_commands([
+        BotCommand("start", "Welcome message"),
+        BotCommand("help", "What I can do, and current limitations"),
+        BotCommand("stats", "Your download usage today"),
+    ])
+
+
 def main():
     # Start the dummy web server in the background so Render sees a live port
     threading.Thread(target=run_web_server, daemon=True).start()
@@ -409,10 +482,13 @@ def main():
         .write_timeout(120)
         .connect_timeout(60)
         .pool_timeout(60)
+        .post_init(post_init)
         .build()
     )
 
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CallbackQueryHandler(handle_quality_choice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
