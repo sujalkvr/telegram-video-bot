@@ -78,9 +78,20 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # If a cookies.txt file is provided (via Render's Secret Files feature), use it.
 # This helps avoid YouTube blocking requests from cloud/datacenter IPs.
-COOKIES_PATH = "/etc/secrets/cookies.txt"
-COOKIES_AVAILABLE = os.path.exists(COOKIES_PATH)
-print(f"[STARTUP CHECK] Cookies file found at {COOKIES_PATH}: {COOKIES_AVAILABLE}")
+import shutil
+
+# Render's Secret Files are mounted read-only, but yt-dlp needs to write back to the
+# cookies file after use — so we copy it to a writable location first.
+RENDER_SECRET_COOKIES_PATH = "/etc/secrets/cookies.txt"
+COOKIES_PATH = "/tmp/cookies.txt"
+
+if os.path.exists(RENDER_SECRET_COOKIES_PATH):
+    shutil.copyfile(RENDER_SECRET_COOKIES_PATH, COOKIES_PATH)
+    COOKIES_AVAILABLE = True
+else:
+    COOKIES_AVAILABLE = False
+
+print(f"[STARTUP CHECK] Cookies available: {COOKIES_AVAILABLE}")
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
