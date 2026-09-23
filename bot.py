@@ -45,6 +45,20 @@ def extract_url(text: str):
     return match.group(0) if match else None
 
 
+def is_youtube_bot_block(error_message: str) -> bool:
+    """Detects YouTube's anti-bot error so we can show a clearer message for it."""
+    text = str(error_message).lower()
+    return "sign in to confirm" in text and "not a bot" in text
+
+
+YOUTUBE_BLOCKED_MESSAGE = (
+    "YouTube is currently blocking downloads from this server — this is a known, "
+    "widespread issue with YouTube's anti-bot detection on cloud-hosted bots, not something "
+    "specific to your link. It may work again later, or you can try a different platform "
+    "(Instagram, X, etc.) which don't have this issue."
+)
+
+
 # --- Global state for safety controls ---
 active_downloads = set()        # user_ids currently downloading (prevents same user double-queueing)
 download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
@@ -242,9 +256,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         duration, title = await asyncio.to_thread(get_video_info, url)
     except Exception as e:
         logger.error(f"Info lookup failed: {e}")
-        await status_message.edit_text(
-            "Couldn't read that link — it may be unsupported, private, or invalid."
-        )
+        if is_youtube_bot_block(e):
+            await status_message.edit_text(YOUTUBE_BLOCKED_MESSAGE)
+        else:
+            await status_message.edit_text(
+                "Couldn't read that link — it may be unsupported, private, or invalid."
+            )
         return
 
     if duration and duration > MAX_DURATION_SECONDS:
@@ -322,10 +339,13 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
                     )
                 except Exception as e:
                     logger.error(f"Download failed: {e}")
-                    await query.edit_message_text(
-                        "Sorry, I couldn't download that. Either this site isn't supported, "
-                        "the content is private, or the link is invalid."
-                    )
+                    if is_youtube_bot_block(e):
+                        await query.edit_message_text(YOUTUBE_BLOCKED_MESSAGE)
+                    else:
+                        await query.edit_message_text(
+                            "Sorry, I couldn't download that. Either this site isn't supported, "
+                            "the content is private, or the link is invalid."
+                        )
                     return
 
                 file_size = os.path.getsize(filepath)
