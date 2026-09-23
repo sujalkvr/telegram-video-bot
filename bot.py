@@ -454,21 +454,33 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
                     return
 
                 await query.edit_message_text("📤 Sending...")
-                await context.bot.send_chat_action(
-                    chat_id=query.message.chat_id,
-                    action=ChatAction.UPLOAD_AUDIO if quality == "audio" else ChatAction.UPLOAD_VIDEO
-                )
+                try:
+                    await context.bot.send_chat_action(
+                        chat_id=query.message.chat_id,
+                        action=ChatAction.UPLOAD_DOCUMENT if quality == "audio" else ChatAction.UPLOAD_VIDEO
+                    )
 
-                with open(filepath, "rb") as f:
-                    if quality == "audio":
-                        await context.bot.send_audio(chat_id=query.message.chat_id, audio=f)
-                    else:
-                        await context.bot.send_video(chat_id=query.message.chat_id, video=f)
+                    with open(filepath, "rb") as f:
+                        if quality == "audio":
+                            await context.bot.send_audio(chat_id=query.message.chat_id, audio=f)
+                        else:
+                            await context.bot.send_video(chat_id=query.message.chat_id, video=f)
 
-                await query.delete_message()
-                increment_daily_usage(user_id)
+                    await query.delete_message()
+                    increment_daily_usage(user_id)
+                except Exception as e:
+                    logger.error(f"Sending file failed: {e}")
+                    await query.edit_message_text(
+                        "The file was ready but something went wrong while sending it. Please try again."
+                    )
+                    return
     finally:
         active_downloads.discard(user_id)
+
+
+async def global_error_handler(update, context):
+    """Catches any unhandled exception anywhere in the bot, so nothing fails silently again."""
+    logger.error(f"Unhandled exception: {context.error}", exc_info=context.error)
 
 
 async def post_init(application):
@@ -500,6 +512,7 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CallbackQueryHandler(handle_quality_choice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_error_handler(global_error_handler)
 
     logger.info("Bot is starting... Press Ctrl+C to stop.")
     app.run_polling()
