@@ -154,6 +154,17 @@ def get_video_info(url: str):
         return info.get("duration"), info.get("title")
 
 
+def extract_audio_to_mp3(input_path: str, output_path: str):
+    """Converts input_path to MP3 directly via ffmpeg, bypassing yt-dlp's
+    built-in audio postprocessor (which can fail on some sites' file formats)."""
+    cmd = [
+        "ffmpeg", "-y", "-i", input_path,
+        "-vn", "-acodec", "libmp3lame", "-ab", "192k",
+        output_path
+    ]
+    subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+
+
 def download_video(url: str, output_dir: str, quality: str, progress_callback=None):
     """
     Downloads (or extracts audio from) the video at `url` into `output_dir`.
@@ -182,15 +193,17 @@ def download_video(url: str, output_dir: str, quality: str, progress_callback=No
         base_opts["cookiefile"] = COOKIES_PATH
 
     if quality == "audio":
-        ydl_opts = {
-            **base_opts,
-            "format": "bestaudio/best",
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }],
-        }
+        # Download the best available audio (or full video if no audio-only stream exists,
+        # e.g. Instagram reels), then convert to MP3 ourselves via ffmpeg directly.
+        ydl_opts = {**base_opts, "format": "bestaudio/best"}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filepath = ydl.prepare_filename(info)
+
+        mp3_path = os.path.splitext(filepath)[0] + ".mp3"
+        extract_audio_to_mp3(filepath, mp3_path)
+        return mp3_path, info.get("duration")
+
     else:
         ydl_opts = {
             **base_opts,
@@ -202,13 +215,9 @@ def download_video(url: str, output_dir: str, quality: str, progress_callback=No
             ),
             "merge_output_format": "mp4",
         }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filepath = ydl.prepare_filename(info)
-        if quality == "audio":
-            base, _ = os.path.splitext(filepath)
-            filepath = base + ".mp3"
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filepath = ydl.prepare_filename(info)
         return filepath, info.get("duration")
 
 
