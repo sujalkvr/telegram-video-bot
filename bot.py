@@ -76,6 +76,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+# If a cookies.txt file is provided (via Render's Secret Files feature), use it.
+# This helps avoid YouTube blocking requests from cloud/datacenter IPs.
+COOKIES_PATH = "/etc/secrets/cookies.txt"
+COOKIES_AVAILABLE = os.path.exists(COOKIES_PATH)
+
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError(
@@ -108,6 +113,8 @@ def get_video_info(url: str):
         "socket_timeout": 15,
         "retries": 2,
     }
+    if COOKIES_AVAILABLE:
+        ydl_opts["cookiefile"] = COOKIES_PATH
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         return info.get("duration"), info.get("title")
@@ -137,6 +144,8 @@ def download_video(url: str, output_dir: str, quality: str, progress_callback=No
         "retries": 2,
         "progress_hooks": [hook],
     }
+    if COOKIES_AVAILABLE:
+        base_opts["cookiefile"] = COOKIES_PATH
 
     if quality == "audio":
         ydl_opts = {
