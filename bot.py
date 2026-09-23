@@ -133,12 +133,13 @@ def increment_daily_usage(user_id: int):
 def get_video_info(url: str):
     """Quick metadata-only lookup (no download) to check duration/validity upfront."""
     ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "socket_timeout": 15,
-        "retries": 2,
-    }
+    "quiet": False,
+    "no_warnings": False,
+    "verbose": True,
+    "noplaylist": True,
+    "socket_timeout": 15,
+    "retries": 2,
+}
     if COOKIES_AVAILABLE:
         ydl_opts["cookiefile"] = COOKIES_PATH
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
